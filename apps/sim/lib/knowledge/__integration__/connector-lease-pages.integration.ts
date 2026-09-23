@@ -38,6 +38,7 @@ vi.mock('@/connectors/registry.server', () => ({
   },
 }))
 
+import { PROJECTION_ROW_BATCH_SIZE } from '@sim/db/knowledge-projection'
 import { resolveBillingAttribution } from '@/lib/billing/core/billing-attribution'
 import { compileCredentialGroupWorkflowAccessPolicy } from '@/lib/credential-groups/application/workflow-access-policy'
 import {
@@ -59,7 +60,6 @@ import {
   resumeMembershipRewrites,
 } from '@/lib/knowledge/connectors/member-sync-engine'
 import { executeSync } from '@/lib/knowledge/connectors/sync-engine'
-import { PROJECTION_ROW_BATCH_SIZE } from '@/lib/knowledge/connectors/sync-limits'
 import {
   createMemberSyncLease,
   type LeaseTransaction,

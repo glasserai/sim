@@ -2,6 +2,7 @@ import { createLogger } from '@sim/logger'
 import { findCause } from '@sim/utils/errors'
 import { queue, task } from '@trigger.dev/sdk'
 import { env, envNumber } from '@/lib/core/config/env'
+import { isFeatureEnabled } from '@/lib/core/config/feature-flags'
 import {
   type BackgroundRetryDecision,
   type BackgroundRetryPolicy,
@@ -43,6 +44,7 @@ import {
   scheduleDocumentProcessingQuotaContinuation,
 } from '@/lib/knowledge/documents/processing-quota-continuation'
 import { processDocumentAsync } from '@/lib/knowledge/documents/service'
+import { requestKnowledgeProjection } from '@/lib/knowledge/projection/enqueue'
 
 const logger = createLogger('TriggerKnowledgeProcessing')
 export { resolveQuotaContinuationDelayMs }
@@ -106,6 +108,7 @@ export async function runDocumentProcessing(
   logger.info(`[${requestId}] Starting Trigger.dev processing for document: ${docData.filename}`)
   /** Set from the service's callback, so control-flow narrowing cannot see it change. */
   let databaseRetryAt = null as Date | null
+  const deferProjection = await isFeatureEnabled('knowledge-async-projection')
 
   try {
     const result = await processDocumentAsync(
@@ -145,10 +148,13 @@ export async function runDocumentProcessing(
           )
           return databaseRetryAt
         },
+        deferProjection,
       }
     )
 
     logger.info(`[${requestId}] Document processing finished`, { documentId, ...result })
+    /** The commit marked the document in either mode; a pass writes or verifies its rows within seconds. */
+    if (result.outcome === 'indexed') await requestKnowledgeProjection()
 
     return {
       success: result.outcome === 'indexed',

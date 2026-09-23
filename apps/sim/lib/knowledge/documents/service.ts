@@ -1,4 +1,5 @@
 import { db } from '@sim/db'
+import { knowledgeProjectionModeSetting } from '@sim/db/knowledge-projection'
 import {
   document,
   documentSecretProvenance,
@@ -1425,6 +1426,11 @@ export interface DocumentProcessingAttemptContext extends DocumentProcessingExec
   readonly scheduleDatabaseRetry?: (error: unknown) => Date | null
   /** Signals that this invocation owns the persisted processing generation. */
   readonly onClaimed?: () => void
+  /**
+   * Commits the chunks without their search projection rows, which the knowledge projector
+   * writes after the commit. The caller resolves it from the `knowledge-async-projection` flag.
+   */
+  readonly deferProjection?: boolean
 }
 
 /**
@@ -2011,6 +2017,8 @@ export async function processDocumentAsync(
               processingCommitted = await db
                 .transaction(async (tx) => {
                   signal.throwIfAborted()
+                  if (attemptContext?.deferProjection)
+                    await tx.execute(sql`SELECT ${knowledgeProjectionModeSetting(true)}`)
                   /**
                    * Reads only the document row. Connector activity is checked by
                    * the completion write at the end instead: reading

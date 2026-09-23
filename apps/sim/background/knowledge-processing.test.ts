@@ -6,14 +6,18 @@ import { afterEach, beforeEach, describe, expect, it, vi } from 'vitest'
 
 const {
   mockAssertBillingAttributionSnapshot,
+  mockIsFeatureEnabled,
   mockProcessDocumentAsync,
+  mockRequestKnowledgeProjection,
   mockQueue,
   mockResolveTriggerRegion,
   mockTask,
   mockTrigger,
 } = vi.hoisted(() => ({
   mockAssertBillingAttributionSnapshot: vi.fn(),
+  mockIsFeatureEnabled: vi.fn(),
   mockProcessDocumentAsync: vi.fn(),
+  mockRequestKnowledgeProjection: vi.fn(),
   mockResolveTriggerRegion: vi.fn(),
   mockQueue: vi.fn((config) => config),
   mockTask: vi.fn((config) => config),
@@ -31,6 +35,10 @@ vi.mock('@/lib/billing/core/billing-attribution', () => ({
 }))
 vi.mock('@/lib/knowledge/documents/service', () => ({
   processDocumentAsync: mockProcessDocumentAsync,
+}))
+vi.mock('@/lib/core/config/feature-flags', () => ({ isFeatureEnabled: mockIsFeatureEnabled }))
+vi.mock('@/lib/knowledge/projection/enqueue', () => ({
+  requestKnowledgeProjection: mockRequestKnowledgeProjection,
 }))
 
 import { ProviderCapacityDeferredError } from '@/lib/core/rate-limiter/provider-capacity-error'
@@ -124,6 +132,7 @@ describe('knowledge processing worker', () => {
       return value
     })
     mockProcessDocumentAsync.mockResolvedValue({ outcome: 'indexed' })
+    mockIsFeatureEnabled.mockResolvedValue(false)
     mockResolveTriggerRegion.mockResolvedValue('us-east-1')
     mockTrigger.mockResolvedValue({ id: 'quota-continuation-run' })
   })
@@ -138,6 +147,22 @@ describe('knowledge processing worker', () => {
       outcome: 'indexed',
       documentId: WORKSPACE_PAYLOAD.documentId,
     })
+  })
+
+  it('defers the projection only while the flag is on, and asks for a pass after every commit', async () => {
+    await runDocumentProcessing(WORKSPACE_PAYLOAD)
+    expect(mockProcessDocumentAsync.mock.calls[0]?.[6]).toMatchObject({ deferProjection: false })
+    expect(mockRequestKnowledgeProjection).toHaveBeenCalledTimes(1)
+
+    mockIsFeatureEnabled.mockResolvedValue(true)
+    await runDocumentProcessing(WORKSPACE_PAYLOAD)
+    expect(mockIsFeatureEnabled).toHaveBeenCalledWith('knowledge-async-projection')
+    expect(mockProcessDocumentAsync.mock.calls[1]?.[6]).toMatchObject({ deferProjection: true })
+    expect(mockRequestKnowledgeProjection).toHaveBeenCalledTimes(2)
+
+    mockProcessDocumentAsync.mockResolvedValue({ outcome: 'skipped', reason: 'superseded' })
+    await runDocumentProcessing(WORKSPACE_PAYLOAD)
+    expect(mockRequestKnowledgeProjection).toHaveBeenCalledTimes(2)
   })
 
   it.each(['unavailable', 'not_claimed', 'superseded'] as const)(

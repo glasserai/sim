@@ -1,5 +1,6 @@
 import { assertBillingAttributionSnapshot } from '@/lib/billing/core/billing-attribution'
 import { env, envNumber } from '@/lib/core/config/env'
+import { isFeatureEnabled } from '@/lib/core/config/feature-flags'
 import {
   type OutboxHandler,
   type OutboxHandlerRegistry,
@@ -65,6 +66,7 @@ import {
   cleanupKnowledgeStorage,
   KNOWLEDGE_STORAGE_CLEANUP_EVENT,
 } from '@/lib/knowledge/documents/storage-cleanup'
+import { requestKnowledgeProjection } from '@/lib/knowledge/projection/enqueue'
 
 function requirePayloadRecord(payload: unknown): Record<string, unknown> {
   if (!payload || typeof payload !== 'object' || Array.isArray(payload)) {
@@ -191,8 +193,9 @@ async function runAdmittedDocument(
 ): Promise<void> {
   const payload = assertDocumentProcessingPayload(rawPayload)
   context.signal.throwIfAborted()
+  const deferProjection = await isFeatureEnabled('knowledge-async-projection')
   try {
-    await processDocumentAsync(
+    const result = await processDocumentAsync(
       payload.knowledgeBaseId,
       payload.documentId,
       payload.docData,
@@ -217,8 +220,11 @@ async function runAdmittedDocument(
           scheduleDocumentProcessingProviderContinuation(payload, error, false, chargedAtDispatch),
         signal: context.signal,
         deadlineAt: context.deadlineAt,
+        deferProjection,
       }
     )
+    /** The commit marked the document in either mode; a pass writes or verifies its rows within seconds. */
+    if (result.outcome === 'indexed') await requestKnowledgeProjection()
   } catch (error) {
     context.signal.throwIfAborted()
     if (

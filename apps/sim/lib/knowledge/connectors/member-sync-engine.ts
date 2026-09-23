@@ -117,6 +117,7 @@ import {
   sweepStuckDocuments,
 } from '@/lib/knowledge/connectors/sync-primitives'
 import { getRetryAfterMs } from '@/lib/knowledge/documents/utils'
+import { requestKnowledgeProjection } from '@/lib/knowledge/projection/enqueue'
 import { getConnectorRequiredScopes } from '@/connectors/auth'
 import { CONNECTOR_REGISTRY } from '@/connectors/registry.server'
 import type {
@@ -536,7 +537,7 @@ async function withMemberLease<T>(
   fn: (tx: DbOrTx) => Promise<T>,
   options: { aclPage?: boolean } = {}
 ): Promise<T> {
-  return db.transaction(async (tx) => {
+  const written = await db.transaction(async (tx) => {
     if (options.aclPage) await boundLeaseTransaction(tx)
     const written = await fn(tx)
     const [held] = await tx
@@ -547,6 +548,8 @@ async function withMemberLease<T>(
     if (!held) throw new SyncLockLostException(run.connectorId)
     return written
   })
+  if (options.aclPage) await requestKnowledgeProjection()
+  return written
 }
 
 async function acquireMemberSyncLock(

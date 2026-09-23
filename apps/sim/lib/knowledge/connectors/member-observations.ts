@@ -1,4 +1,5 @@
 import { db } from '@sim/db'
+import { PROJECTION_ROW_BATCH_SIZE } from '@sim/db/knowledge-projection'
 import {
   document,
   knowledgeConnector,
@@ -34,7 +35,6 @@ import {
   MEMBER_PURGE_MAX_PER_RUN,
   MEMBER_TOMBSTONE_PURGE_DAYS,
   MEMBER_TOMBSTONE_RECONCILE_PAGES_PER_RUN,
-  PROJECTION_ROW_BATCH_SIZE,
 } from '@/lib/knowledge/connectors/sync-limits'
 import {
   boundLeaseTransaction,
@@ -51,6 +51,7 @@ import {
   ConnectorSyncDeletionGuardError,
   hardDeleteDocuments,
 } from '@/lib/knowledge/documents/service'
+import { requestKnowledgeProjection } from '@/lib/knowledge/projection/enqueue'
 
 const logger = createLogger('MemberObservations')
 
@@ -360,6 +361,12 @@ interface ConnectorDocumentCursor {
  * search projection rows per table, the rows an ACL assignment sends through the projection
  * trigger. Every page holds at least one document, so one larger than the cap still makes progress
  * alone. Documents keep their order.
+ *
+ * Cleanup boundary: the row bound, and {@link lockProjectionPage} and
+ * {@link writeProjectionPages} built on it, exist only because a synchronous ACL write rewrites
+ * projection rows in its own statement. With `knowledge-async-projection` on, an ACL write only
+ * marks its documents; once the flag has been on everywhere and the synchronous triggers are
+ * dropped, these collapse to plain pages of {@link ACL_CHANGE_BATCH_SIZE} documents.
  */
 export function pagesByProjectionRows(
   documents: readonly { id: string; chunkCount: number }[]
@@ -1037,7 +1044,7 @@ async function sweepStaleMemberPage(
   more: boolean
 } | null> {
   try {
-    return await db.transaction(async (tx) => {
+    const swept = await db.transaction(async (tx) => {
       await boundLeaseTransaction(tx)
       const [stale] = await tx
         .select({ id: knowledgeConnectorMember.id })
@@ -1108,6 +1115,8 @@ async function sweepStaleMemberPage(
         more: candidates.length === ACL_CHANGE_BATCH_SIZE || rest.length > 0,
       }
     })
+    if (swept) await requestKnowledgeProjection()
+    return swept
   } catch (error) {
     if (error instanceof StaleSweepConnectorIneligible) return null
     throw error

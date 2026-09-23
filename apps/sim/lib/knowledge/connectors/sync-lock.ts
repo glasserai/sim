@@ -1,12 +1,15 @@
 import { db } from '@sim/db'
+import { knowledgeProjectionModeSetting } from '@sim/db/knowledge-projection'
 import { knowledgeConnector } from '@sim/db/schema'
 import { and, eq, isNull, sql } from 'drizzle-orm'
+import { isFeatureEnabled } from '@/lib/core/config/feature-flags'
 import type { DbOrTx } from '@/lib/db/types'
 import {
   LEASE_PAGE_LOCK_TIMEOUT_MS,
   LEASE_PAGE_STATEMENT_TIMEOUT_MS,
   SYNC_LOCK_HEARTBEAT_INTERVAL_MS,
 } from '@/lib/knowledge/connectors/sync-limits'
+import { requestKnowledgeProjection } from '@/lib/knowledge/projection/enqueue'
 
 /**
  * Raised when a run discovers mid-flight that it no longer holds its sync lock.
@@ -241,13 +244,19 @@ export async function assertSyncLeaseHeldInTx(
 }
 
 /**
- * The bounds of a connector-lease ACL page. The `document` ACL trigger rewrites every filled
- * search projection row of a document whose ACL is assigned, so a page that waits on a lock or
- * runs long fails within the bounds and rolls back only itself.
+ * The settings of a connector-lease ACL page, in one statement: its bounds, so a page that waits
+ * on a lock or runs long fails within them and rolls back only itself, and its projection mode.
+ * While `knowledge-async-projection` is on, the page's ACL writes only mark their documents and
+ * the knowledge projector rewrites their search projection rows; off, the `document` ACL trigger
+ * still rewrites every filled row in the page's own statement, which is what the row-bounded
+ * paging of these pages exists for. Every page that assigns an ACL runs this, so it is the one
+ * place connector writers choose the mode. Call {@link requestKnowledgeProjection} once the page
+ * commits.
  */
 export async function boundLeaseTransaction(tx: Pick<DbOrTx, 'execute'>): Promise<void> {
+  const deferProjection = await isFeatureEnabled('knowledge-async-projection')
   await tx.execute(
-    sql`SELECT set_config('lock_timeout', ${`${LEASE_PAGE_LOCK_TIMEOUT_MS}ms`}, true), set_config('statement_timeout', ${`${LEASE_PAGE_STATEMENT_TIMEOUT_MS}ms`}, true)`
+    sql`SELECT set_config('lock_timeout', ${`${LEASE_PAGE_LOCK_TIMEOUT_MS}ms`}, true), set_config('statement_timeout', ${`${LEASE_PAGE_STATEMENT_TIMEOUT_MS}ms`}, true), ${knowledgeProjectionModeSetting(deferProjection)}`
   )
 }
 
@@ -267,13 +276,16 @@ export function leaseTransaction(
   lease?: SyncWriteLease,
   executor: Pick<typeof db, 'transaction'> = db
 ): LeaseTransaction {
-  return (write) =>
-    executor.transaction(async (tx) => {
+  return async (write) => {
+    const written = await executor.transaction(async (tx) => {
       await boundLeaseTransaction(tx)
       const written = await write(tx)
       if (lease) await assertSyncLeaseHeldInTx(tx, connectorId, lease)
       return written
     })
+    await requestKnowledgeProjection()
+    return written
+  }
 }
 
 /**

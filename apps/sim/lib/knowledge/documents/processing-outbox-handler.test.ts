@@ -9,6 +9,7 @@ const mocks = vi.hoisted(() => ({
   processDocumentsWithQueue: vi.fn(),
   processDocumentAsync: vi.fn(),
   reclaimStaleDocumentProcessingClaim: vi.fn(),
+  requestKnowledgeProjection: vi.fn(),
 }))
 
 vi.mock('@/lib/knowledge/documents/service', () => ({
@@ -16,6 +17,10 @@ vi.mock('@/lib/knowledge/documents/service', () => ({
   processDocumentsWithQueue: mocks.processDocumentsWithQueue,
   processDocumentAsync: mocks.processDocumentAsync,
   isTriggerAvailable: () => false,
+}))
+
+vi.mock('@/lib/knowledge/projection/enqueue', () => ({
+  requestKnowledgeProjection: mocks.requestKnowledgeProjection,
 }))
 
 vi.mock('@/lib/knowledge/documents/processing-claim', () => ({
@@ -88,6 +93,7 @@ describe('knowledge document processing outbox handler', () => {
       failedDocumentIds: [],
     })
     mocks.reclaimStaleDocumentProcessingClaim.mockResolvedValue(false)
+    mocks.processDocumentAsync.mockResolvedValue({ outcome: 'indexed' })
   })
 
   it('transfers a recovery admission only on its first delivery', async () => {
@@ -112,7 +118,7 @@ describe('knowledge document processing outbox handler', () => {
     mocks.processDocumentAsync.mockRejectedValueOnce(new Error('Synthetic connection loss'))
     await expect(recover(payload, createContext())).rejects.toThrow('Synthetic connection loss')
     expect(mocks.processDocumentAsync.mock.calls[0][6].chargedAtDispatch).toBe(true)
-    mocks.processDocumentAsync.mockResolvedValueOnce(undefined)
+    mocks.processDocumentAsync.mockResolvedValueOnce({ outcome: 'indexed' })
     await recover(payload, { ...createContext(), attempts: 1 })
     expect(mocks.processDocumentAsync.mock.calls[1][6].chargedAtDispatch).toBe(false)
   })

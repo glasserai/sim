@@ -2,6 +2,7 @@
  * @vitest-environment node
  */
 import { installProjectionSourceAcl } from '@sim/db/script-migrations/0021_embedding_search_connector'
+import { installMarkFunctions } from '@sim/db/script-migrations/0024_knowledge_projection_async'
 import { generateId } from '@sim/utils/id'
 import postgres, { type Sql } from 'postgres'
 import { afterAll, beforeAll, beforeEach, describe, expect, it, vi } from 'vitest'
@@ -75,6 +76,11 @@ describe.runIf(Boolean(databaseUrl))('persistDocumentAcls in PostgreSQL', () => 
         connector_id text, acl text[]
       )`
     }
+    await sql`CREATE TABLE knowledge_projection_dirty (
+      document_id text PRIMARY KEY, generation bigint NOT NULL DEFAULT 1,
+      content boolean NOT NULL DEFAULT false, marked_at timestamptz NOT NULL DEFAULT now()
+    )`
+    await installMarkFunctions(sql)
     await installProjectionSourceAcl(sql)
     /**
      * Counts the documents whose write fired the projection fan-out: the trigger fires on any
